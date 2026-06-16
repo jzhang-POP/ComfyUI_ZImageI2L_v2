@@ -294,7 +294,7 @@ class ZImageI2LV2Generate:
                 "template": ("ZIMAGE_I2L_TEMPLATE",),
                 "images": ("IMAGE",),
                 "prompt": ("STRING", {"default": "A cat is sitting on a stone", "multiline": True}),
-                "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF, "control_after_generate": True}),
                 "cfg_scale": ("FLOAT", {"default": 4.0, "min": 0.0, "max": 30.0, "step": 0.1}),
                 "num_inference_steps": ("INT", {"default": 50, "min": 1, "max": 200}),
                 "sigma_shift": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 20.0, "step": 0.1}),
@@ -440,82 +440,31 @@ class ZImageI2LV2GrayImages:
         return (torch.full_like(images, 128.0 / 255.0),)
 
 
-class ZImageI2LV2SamplerConfig:
-    """Bundle the diffusion sampling parameters into one config object for Sample."""
+class ZImageI2LV2Sample:
+    """Run the diffusion sampling -> IMAGE. Modeled on ComfyUI's KSampler.
+
+    Like KSampler(model, positive, negative, ...params), this takes the pipeline plus the
+    positive LoRA and an optional negative (gray) LoRA directly, and holds the sampling
+    parameters as its own widgets. Calls
+    pipe(prompt=..., lora=<positive>, negative_lora=<negative>, ...).
+    """
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF}),
+                "pipe": ("ZIMAGE_PIPE", {"tooltip": "The Z-Image pipeline from Loader."}),
+                "lora": ("ZIMAGE_LORA", {"tooltip": "Positive-branch LoRA, e.g. from Extract LoRA on the reference images."}),
+                "prompt": ("STRING", {"default": "a cat is sitting on a stone", "multiline": True}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF, "control_after_generate": True}),
                 "cfg_scale": ("FLOAT", {"default": 4.0, "min": 0.0, "max": 30.0, "step": 0.1}),
                 "num_inference_steps": ("INT", {"default": 50, "min": 1, "max": 200}),
                 "sigma_shift": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 20.0, "step": 0.1}),
                 "width": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 16}),
                 "height": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 16}),
             },
-        }
-
-    RETURN_TYPES = ("ZIMAGE_SAMPLER_CFG",)
-    RETURN_NAMES = ("sampler_cfg",)
-    FUNCTION = "build"
-    CATEGORY = "ZImage-i2L/atomic"
-
-    def build(self, seed, cfg_scale, num_inference_steps, sigma_shift, width, height):
-        return ({
-            "seed": int(seed),
-            "cfg_scale": float(cfg_scale),
-            "num_inference_steps": int(num_inference_steps),
-            "sigma_shift": float(sigma_shift),
-            "width": int(width),
-            "height": int(height),
-        },)
-
-
-class ZImageI2LV2ApplyLoRA:
-    """Associate a predicted LoRA (and optional negative/gray LoRA) with the pipeline.
-
-    Outputs a bundle consumed by Sample. The positive LoRA drives the conditional branch;
-    the optional negative LoRA drives the unconditional branch (asymmetric CFG).
-    """
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "pipe": ("ZIMAGE_PIPE",),
-                "lora": ("ZIMAGE_LORA",),
-            },
             "optional": {
-                "negative_lora": ("ZIMAGE_LORA",),
-            },
-        }
-
-    RETURN_TYPES = ("ZIMAGE_PIPE_LORA",)
-    RETURN_NAMES = ("pipe_lora",)
-    FUNCTION = "apply"
-    CATEGORY = "ZImage-i2L/atomic"
-
-    def apply(self, pipe, lora, negative_lora=None):
-        return ({"pipe": pipe, "lora": lora, "negative_lora": negative_lora},)
-
-
-class ZImageI2LV2Sample:
-    """Run the diffusion sampling: pipe + LoRA bundle + sampler config + prompt -> IMAGE.
-
-    This is the atomic equivalent of Generate's final step. It calls
-    pipe(prompt=..., lora=<positive>, negative_lora=<negative>, **sampler_cfg).
-    """
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "pipe_lora": ("ZIMAGE_PIPE_LORA",),
-                "sampler_cfg": ("ZIMAGE_SAMPLER_CFG",),
-                "prompt": ("STRING", {"default": "a cat is sitting on a stone", "multiline": True}),
-            },
-            "optional": {
+                "negative_lora": ("ZIMAGE_LORA", {"tooltip": "Negative-branch LoRA (e.g. Extract LoRA on Gray Images) for asymmetric CFG. Leave unconnected for symmetric."}),
                 "negative_prompt": ("STRING", {"default": "", "multiline": True}),
             },
         }
@@ -525,19 +474,20 @@ class ZImageI2LV2Sample:
     FUNCTION = "sample"
     CATEGORY = "ZImage-i2L/atomic"
 
-    def sample(self, pipe_lora, sampler_cfg, prompt, negative_prompt=""):
+    def sample(self, pipe, lora, prompt, seed, cfg_scale, num_inference_steps,
+               sigma_shift, width, height, negative_lora=None, negative_prompt=""):
         import torch
-        pipe = pipe_lora["pipe"]
-
-        cfg = dict(sampler_cfg)
-        sigma_shift = cfg.pop("sigma_shift", None)
         kwargs = dict(
             prompt=prompt,
             negative_prompt=negative_prompt or "",
-            lora=pipe_lora.get("lora"),
-            negative_lora=pipe_lora.get("negative_lora"),
+            lora=lora,
+            negative_lora=negative_lora,
+            seed=int(seed),
+            cfg_scale=float(cfg_scale),
+            num_inference_steps=int(num_inference_steps),
+            width=int(width),
+            height=int(height),
             progress_bar_cmd=_comfy_pbar_cmd(),  # show progress on the node, not just console
-            **cfg,  # seed, cfg_scale, num_inference_steps, width, height
         )
         if sigma_shift and sigma_shift > 0:
             kwargs["sigma_shift"] = float(sigma_shift)
@@ -555,8 +505,6 @@ NODE_CLASS_MAPPINGS = {
     "ZImageI2LV2Generate": ZImageI2LV2Generate,
     # atomic building blocks
     "ZImageI2LV2GrayImages": ZImageI2LV2GrayImages,
-    "ZImageI2LV2SamplerConfig": ZImageI2LV2SamplerConfig,
-    "ZImageI2LV2ApplyLoRA": ZImageI2LV2ApplyLoRA,
     "ZImageI2LV2Sample": ZImageI2LV2Sample,
 }
 
@@ -567,7 +515,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ZImageI2LV2SaveLoRA": "Z-Image i2L v2 — Save LoRA",
     "ZImageI2LV2Generate": "Z-Image i2L v2 — Generate",
     "ZImageI2LV2GrayImages": "Z-Image i2L v2 — Make Gray Images",
-    "ZImageI2LV2SamplerConfig": "Z-Image i2L v2 — Sampler Config",
-    "ZImageI2LV2ApplyLoRA": "Z-Image i2L v2 — Apply LoRA",
     "ZImageI2LV2Sample": "Z-Image i2L v2 — Sample",
 }

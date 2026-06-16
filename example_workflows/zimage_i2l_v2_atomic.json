@@ -1,6 +1,6 @@
 {
-  "last_node_id": 9,
-  "last_link_id": 11,
+  "last_node_id": 7,
+  "last_link_id": 9,
   "nodes": [
     {
       "id": 1,
@@ -89,9 +89,9 @@
     },
     {
       "id": 6,
-      "type": "ZImageI2LV2ApplyLoRA",
-      "pos": [760, 220],
-      "size": [260, 100],
+      "type": "ZImageI2LV2Sample",
+      "pos": [760, 160],
+      "size": [380, 320],
       "flags": {},
       "order": 6,
       "mode": 0,
@@ -101,54 +101,21 @@
         {"name": "negative_lora", "type": "ZIMAGE_LORA", "link": 8}
       ],
       "outputs": [
-        {"name": "pipe_lora", "type": "ZIMAGE_PIPE_LORA", "links": [9], "slot_index": 0}
+        {"name": "image", "type": "IMAGE", "links": [9], "slot_index": 0}
       ],
-      "properties": {"Node name for S&R": "ZImageI2LV2ApplyLoRA"},
-      "widgets_values": []
+      "properties": {"Node name for S&R": "ZImageI2LV2Sample"},
+      "widgets_values": ["a cat is sitting on a stone", 0, "fixed", 4.0, 50, 8.0, 1024, 1024, ""]
     },
     {
       "id": 7,
-      "type": "ZImageI2LV2SamplerConfig",
-      "pos": [760, 380],
-      "size": [280, 200],
-      "flags": {},
-      "order": 2,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {"name": "sampler_cfg", "type": "ZIMAGE_SAMPLER_CFG", "links": [10], "slot_index": 0}
-      ],
-      "properties": {"Node name for S&R": "ZImageI2LV2SamplerConfig"},
-      "widgets_values": [0, "fixed", 4.0, 50, 8.0, 1024, 1024]
-    },
-    {
-      "id": 8,
-      "type": "ZImageI2LV2Sample",
-      "pos": [1080, 200],
-      "size": [380, 200],
+      "type": "PreviewImage",
+      "pos": [1180, 160],
+      "size": [380, 380],
       "flags": {},
       "order": 7,
       "mode": 0,
       "inputs": [
-        {"name": "pipe_lora", "type": "ZIMAGE_PIPE_LORA", "link": 9},
-        {"name": "sampler_cfg", "type": "ZIMAGE_SAMPLER_CFG", "link": 10}
-      ],
-      "outputs": [
-        {"name": "image", "type": "IMAGE", "links": [11], "slot_index": 0}
-      ],
-      "properties": {"Node name for S&R": "ZImageI2LV2Sample"},
-      "widgets_values": ["a cat is sitting on a stone", ""]
-    },
-    {
-      "id": 9,
-      "type": "PreviewImage",
-      "pos": [1500, 200],
-      "size": [380, 380],
-      "flags": {},
-      "order": 8,
-      "mode": 0,
-      "inputs": [
-        {"name": "images", "type": "IMAGE", "link": 11}
+        {"name": "images", "type": "IMAGE", "link": 9}
       ],
       "outputs": [],
       "properties": {"Node name for S&R": "PreviewImage"},
@@ -164,12 +131,10 @@
     [6, 3, 0, 6, 0, "ZIMAGE_PIPE"],
     [7, 4, 0, 6, 1, "ZIMAGE_LORA"],
     [8, 5, 0, 6, 2, "ZIMAGE_LORA"],
-    [9, 6, 0, 8, 0, "ZIMAGE_PIPE_LORA"],
-    [10, 7, 0, 8, 1, "ZIMAGE_SAMPLER_CFG"],
-    [11, 8, 0, 9, 0, "IMAGE"]
+    [9, 6, 0, 7, 0, "IMAGE"]
   ],
   "groups": [
-    {"title": "Predict style LoRA (positive)", "bounding": [420, 150, 290, 140], "color": "#3f789e", "font_size": 20, "flags": {}},
+    {"title": "Positive style LoRA", "bounding": [430, 150, 290, 140], "color": "#3f789e", "font_size": 20, "flags": {}},
     {"title": "Gray -> negative LoRA (asymmetric CFG)", "bounding": [410, 50, 300, 100], "color": "#88A", "font_size": 20, "flags": {}}
   ],
   "config": {},
