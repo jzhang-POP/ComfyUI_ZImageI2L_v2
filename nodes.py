@@ -1,0 +1,271 @@
+"""ComfyUI nodes wrapping DiffSynth-Studio's Z-Image i2L v2 (Image-to-LoRA).
+
+Design notes
+------------
+- v2 uses the *Diffusion Templates* API (`diffsynth.diffusion.template.TemplatePipeline`),
+  which is different from v1's `ZImageUnit_Image2LoRAEncode/Decode`. This package targets v2.
+- ALL heavy imports (torch, diffsynth, modelscope, folder_paths) are intentionally lazy,
+  done inside the node methods. This lets the module import and the nodes register on any
+  machine (e.g. a Mac with no CUDA / no diffsynth) so you can verify loading, while the
+  actual work runs only when a node executes on a CUDA box.
+"""
+
+import os
+
+
+# ---------------------------------------------------------------------------
+# Helpers (lazy imports inside so the module loads without torch/PIL present)
+# ---------------------------------------------------------------------------
+
+def _images_to_pils(image):
+    """ComfyUI IMAGE tensor [B,H,W,C] float 0-1 -> list[PIL.Image]."""
+    import numpy as np
+    from PIL import Image
+    arr = (image.detach().clamp(0, 1).cpu().numpy() * 255.0).round().astype("uint8")
+    return [Image.fromarray(a).convert("RGB") for a in arr]
+
+
+def _pil_to_image_tensor(pil_image):
+    """PIL.Image -> ComfyUI IMAGE tensor [1,H,W,C] float 0-1."""
+    import numpy as np
+    import torch
+    arr = np.array(pil_image.convert("RGB")).astype("float32") / 255.0
+    return torch.from_numpy(arr)[None, ]
+
+
+def _gray_negatives(pil_images):
+    """Neutral gray (128) counterparts of the reference images, for asymmetric CFG."""
+    import numpy as np
+    from PIL import Image
+    return [Image.fromarray(np.zeros_like(np.array(i)) + 128) for i in pil_images]
+
+
+def _resolve_dtype(name):
+    import torch
+    return {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}[name]
+
+
+def _check_v2_available():
+    """Raise a clear, actionable error if the v2 template API isn't importable."""
+    try:
+        from diffsynth.diffusion.template import TemplatePipeline  # noqa: F401
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(
+            "DiffSynth-Studio with the v2 Diffusion Templates API is required, but "
+            "`from diffsynth.diffusion.template import TemplatePipeline` failed.\n"
+            "Install the latest from git (the PyPI build may lag):\n"
+            "    git clone https://github.com/modelscope/DiffSynth-Studio.git\n"
+            "    cd DiffSynth-Studio && pip install -e .\n"
+            f"Underlying import error: {e!r}"
+        ) from e
+
+
+# ---------------------------------------------------------------------------
+# Loader: builds the base Z-Image pipeline + the i2L v2 TemplatePipeline
+# ---------------------------------------------------------------------------
+
+class ZImageI2LV2Loader:
+    """Load the base Z-Image generation pipeline and the i2L v2 template once.
+
+    Outputs both because Generate needs both, while Extract needs only the template.
+    Models auto-download from ModelScope into MODELSCOPE_CACHE (default ~/.cache/modelscope/hub).
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "device": (["cuda", "mps", "cpu"], {"default": "cuda"}),
+                "dtype": (["bfloat16", "float16", "float32"], {"default": "bfloat16"}),
+            },
+            "optional": {
+                # Blank = use the MODELSCOPE_CACHE env var / default cache location.
+                "modelscope_cache": ("STRING", {"default": ""}),
+            },
+        }
+
+    RETURN_TYPES = ("ZIMAGE_PIPE", "ZIMAGE_I2L_TEMPLATE")
+    RETURN_NAMES = ("pipe", "template")
+    FUNCTION = "load"
+    CATEGORY = "ZImage-i2L"
+
+    def load(self, device, dtype, modelscope_cache=""):
+        _check_v2_available()
+        import torch
+        from diffsynth.pipelines.z_image import ZImagePipeline, ModelConfig
+        from diffsynth.diffusion.template import TemplatePipeline
+
+        if modelscope_cache.strip():
+            os.environ["MODELSCOPE_CACHE"] = modelscope_cache.strip()
+
+        if device == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError(
+                "device='cuda' selected but CUDA is not available. "
+                "On a non-CUDA box this pipeline is not supported by the upstream code."
+            )
+
+        torch_dtype = _resolve_dtype(dtype)
+
+        pipe = ZImagePipeline.from_pretrained(
+            torch_dtype=torch_dtype,
+            device=device,
+            model_configs=[
+                ModelConfig(model_id="Tongyi-MAI/Z-Image", origin_file_pattern="transformer/*.safetensors"),
+                ModelConfig(model_id="Tongyi-MAI/Z-Image-Turbo", origin_file_pattern="text_encoder/*.safetensors"),
+                ModelConfig(model_id="Tongyi-MAI/Z-Image-Turbo", origin_file_pattern="vae/diffusion_pytorch_model.safetensors"),
+            ],
+            tokenizer_config=ModelConfig(model_id="Tongyi-MAI/Z-Image-Turbo", origin_file_pattern="tokenizer/"),
+        )
+        # Required so predicted LoRAs can be hot-loaded onto the DiT at generation time.
+        pipe.enable_lora_hot_loading(pipe.dit)
+
+        template = TemplatePipeline.from_pretrained(
+            torch_dtype=torch_dtype,
+            device=device,
+            model_configs=[ModelConfig(model_id="DiffSynth-Studio/ZImage-i2L-v2")],
+        )
+        return (pipe, template)
+
+
+# ---------------------------------------------------------------------------
+# Extract: reference images -> predicted LoRA state dict (no sampling)
+# ---------------------------------------------------------------------------
+
+class ZImageI2LV2ExtractLoRA:
+    """Predict a LoRA from one or more reference images via the i2L v2 hypernetwork.
+
+    Note: extraction is a deterministic forward pass (no diffusion sampling), so there is
+    no seed input here — matching v2's `template.call_single_side(inputs=...)` API.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "template": ("ZIMAGE_I2L_TEMPLATE",),
+                "images": ("IMAGE",),
+            },
+        }
+
+    RETURN_TYPES = ("ZIMAGE_LORA",)
+    RETURN_NAMES = ("lora",)
+    FUNCTION = "extract"
+    CATEGORY = "ZImage-i2L"
+
+    def extract(self, template, images):
+        import torch
+        pils = _images_to_pils(images)
+        if not pils:
+            raise ValueError("ExtractLoRA received no images.")
+        with torch.no_grad():
+            lora = template.call_single_side(inputs=[{"image": pils}])["lora"]
+        return (lora,)
+
+
+# ---------------------------------------------------------------------------
+# Save: write a predicted LoRA to models/loras as safetensors
+# ---------------------------------------------------------------------------
+
+class ZImageI2LV2SaveLoRA:
+    """Save a predicted LoRA into ComfyUI's loras folder for reuse anywhere."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "lora": ("ZIMAGE_LORA",),
+                "filename": ("STRING", {"default": "zimage_i2l_v2_style"}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("filename",)
+    FUNCTION = "save"
+    CATEGORY = "ZImage-i2L"
+    OUTPUT_NODE = True
+
+    def save(self, lora, filename):
+        import folder_paths
+        from safetensors.torch import save_file
+
+        name = filename.strip() or "zimage_i2l_v2_style"
+        if not name.endswith(".safetensors"):
+            name += ".safetensors"
+        out_dir = folder_paths.get_folder_paths("loras")[0]
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.join(out_dir, name)
+        save_file(lora, out_path)
+        print(f"[ZImageI2LV2] Saved LoRA -> {out_path}")
+        return (name,)
+
+
+# ---------------------------------------------------------------------------
+# Generate: full styled image with asymmetric CFG (gray-image negative branch)
+# ---------------------------------------------------------------------------
+
+class ZImageI2LV2Generate:
+    """Generate a styled image directly, preserving the paper's asymmetric CFG.
+
+    Reference images drive the positive branch; their neutral-gray counterparts drive the
+    negative branch (built automatically). This keeps full v2 quality rather than handing a
+    saved LoRA to ComfyUI's stock loader (which would apply it to both CFG branches).
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "pipe": ("ZIMAGE_PIPE",),
+                "template": ("ZIMAGE_I2L_TEMPLATE",),
+                "images": ("IMAGE",),
+                "prompt": ("STRING", {"default": "A cat is sitting on a stone", "multiline": True}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF}),
+                "cfg_scale": ("FLOAT", {"default": 4.0, "min": 0.0, "max": 30.0, "step": 0.1}),
+                "num_inference_steps": ("INT", {"default": 50, "min": 1, "max": 200}),
+                "sigma_shift": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 20.0, "step": 0.1}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "generate"
+    CATEGORY = "ZImage-i2L"
+
+    def generate(self, pipe, template, images, prompt, seed, cfg_scale, num_inference_steps, sigma_shift):
+        import torch
+        pils = _images_to_pils(images)
+        if not pils:
+            raise ValueError("Generate received no reference images.")
+
+        kwargs = dict(
+            prompt=prompt,
+            seed=int(seed),
+            cfg_scale=float(cfg_scale),
+            num_inference_steps=int(num_inference_steps),
+            template_inputs=[{"image": pils}],
+            negative_template_inputs=[{"image": _gray_negatives(pils)}],
+        )
+        # sigma_shift is a Z-Image pipeline knob (v1 i2L example used 8). Omit if zeroed
+        # so we don't pass an unexpected kwarg when the user disables it.
+        if sigma_shift and sigma_shift > 0:
+            kwargs["sigma_shift"] = float(sigma_shift)
+
+        with torch.no_grad():
+            image = template(pipe, **kwargs)
+
+        return (_pil_to_image_tensor(image),)
+
+
+NODE_CLASS_MAPPINGS = {
+    "ZImageI2LV2Loader": ZImageI2LV2Loader,
+    "ZImageI2LV2ExtractLoRA": ZImageI2LV2ExtractLoRA,
+    "ZImageI2LV2SaveLoRA": ZImageI2LV2SaveLoRA,
+    "ZImageI2LV2Generate": ZImageI2LV2Generate,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "ZImageI2LV2Loader": "Z-Image i2L v2 — Loader",
+    "ZImageI2LV2ExtractLoRA": "Z-Image i2L v2 — Extract LoRA",
+    "ZImageI2LV2SaveLoRA": "Z-Image i2L v2 — Save LoRA",
+    "ZImageI2LV2Generate": "Z-Image i2L v2 — Generate",
+}

@@ -1,0 +1,6 @@
+# DiffSynth-Studio must be installed from the latest git, NOT PyPI, because v2 needs
+# `diffsynth.diffusion.template.TemplatePipeline`, which the PyPI build may lag:
+#     git clone https://github.com/modelscope/DiffSynth-Studio.git
+#     cd DiffSynth-Studio && pip install -e .
+modelscope
+safetensors
