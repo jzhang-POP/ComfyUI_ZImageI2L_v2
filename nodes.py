@@ -315,9 +315,23 @@ class ZImageI2LV2LoadImagesFromFolder:
         import torch
         from PIL import Image, ImageOps
 
-        path = folder_path.strip()
-        if not path or not os.path.isdir(path):
-            raise ValueError(f"folder_path is not a directory: {folder_path!r}")
+        raw = folder_path.strip()
+        if not raw:
+            raise ValueError("folder_path is empty.")
+        # Accept an absolute path, ~user path, or a path relative to ComfyUI's input dir
+        # (so e.g. "00_raw" or "styles/cat" resolves under ComfyUI/input).
+        candidates = [os.path.expanduser(raw)]
+        try:
+            import folder_paths
+            candidates.append(os.path.join(folder_paths.get_input_directory(), raw))
+        except Exception:
+            pass
+        path = next((c for c in candidates if os.path.isdir(c)), None)
+        if path is None:
+            raise ValueError(
+                f"folder_path is not a directory: {folder_path!r}. "
+                f"Tried: {candidates}. Use an absolute path, or one relative to ComfyUI/input."
+            )
 
         files = sorted(
             f for f in os.listdir(path)
