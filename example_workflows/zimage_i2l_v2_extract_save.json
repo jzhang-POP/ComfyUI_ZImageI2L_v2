@@ -1,0 +1,82 @@
+{
+  "last_node_id": 4,
+  "last_link_id": 3,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "LoadImage",
+      "pos": [40, 200],
+      "size": [320, 314],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [1], "slot_index": 0},
+        {"name": "MASK", "type": "MASK", "links": null, "slot_index": 1}
+      ],
+      "properties": {"Node name for S&R": "LoadImage"},
+      "widgets_values": ["example.png", "image"]
+    },
+    {
+      "id": 2,
+      "type": "ZImageI2LV2Loader",
+      "pos": [40, 560],
+      "size": [330, 106],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "pipe", "type": "ZIMAGE_PIPE", "links": null, "slot_index": 0},
+        {"name": "template", "type": "ZIMAGE_I2L_TEMPLATE", "links": [2], "slot_index": 1}
+      ],
+      "properties": {"Node name for S&R": "ZImageI2LV2Loader"},
+      "widgets_values": ["cuda", "bfloat16", ""]
+    },
+    {
+      "id": 3,
+      "type": "ZImageI2LV2ExtractLoRA",
+      "pos": [420, 280],
+      "size": [300, 80],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {"name": "template", "type": "ZIMAGE_I2L_TEMPLATE", "link": 2},
+        {"name": "images", "type": "IMAGE", "link": 1}
+      ],
+      "outputs": [
+        {"name": "lora", "type": "ZIMAGE_LORA", "links": [3], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "ZImageI2LV2ExtractLoRA"},
+      "widgets_values": []
+    },
+    {
+      "id": 4,
+      "type": "ZImageI2LV2SaveLoRA",
+      "pos": [770, 280],
+      "size": [320, 90],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {"name": "lora", "type": "ZIMAGE_LORA", "link": 3}
+      ],
+      "outputs": [
+        {"name": "filename", "type": "STRING", "links": null, "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "ZImageI2LV2SaveLoRA"},
+      "widgets_values": ["my_style"]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 3, 1, "IMAGE"],
+    [2, 2, 1, 3, 0, "ZIMAGE_I2L_TEMPLATE"],
+    [3, 3, 0, 4, 0, "ZIMAGE_LORA"]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}
