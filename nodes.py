@@ -278,8 +278,76 @@ class ZImageI2LV2Generate:
         return (_pil_to_image_tensor(image),)
 
 
+# ---------------------------------------------------------------------------
+# Load Images From Folder: folder path -> batched IMAGE for the Generate/Extract input
+# ---------------------------------------------------------------------------
+
+class ZImageI2LV2LoadImagesFromFolder:
+    """Load every image in a folder as one IMAGE batch.
+
+    Convenience for feeding a set of style references without wiring N Load Image nodes.
+    Files are taken in sorted filename order. Because a ComfyUI IMAGE output is a single
+    uniformly-sized tensor batch, images that differ from the first image's dimensions are
+    resized to match it (the i2L encoders resize internally anyway, so style is unaffected).
+    """
+
+    _EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif"}
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "folder_path": ("STRING", {"default": ""}),
+            },
+            "optional": {
+                # 0 = load all. i2L works well with ~1-8 references.
+                "limit": ("INT", {"default": 0, "min": 0, "max": 1000}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "INT")
+    RETURN_NAMES = ("images", "count")
+    FUNCTION = "load_folder"
+    CATEGORY = "ZImage-i2L"
+
+    def load_folder(self, folder_path, limit=0):
+        import numpy as np
+        import torch
+        from PIL import Image, ImageOps
+
+        path = folder_path.strip()
+        if not path or not os.path.isdir(path):
+            raise ValueError(f"folder_path is not a directory: {folder_path!r}")
+
+        files = sorted(
+            f for f in os.listdir(path)
+            if os.path.splitext(f)[1].lower() in self._EXTS
+            and os.path.isfile(os.path.join(path, f))
+        )
+        if limit and limit > 0:
+            files = files[:limit]
+        if not files:
+            raise ValueError(f"No images found in folder: {path}")
+
+        tensors = []
+        ref_size = None
+        for fn in files:
+            img = Image.open(os.path.join(path, fn))
+            img = ImageOps.exif_transpose(img).convert("RGB")
+            if ref_size is None:
+                ref_size = img.size
+            elif img.size != ref_size:
+                img = img.resize(ref_size, Image.LANCZOS)
+            tensors.append(torch.from_numpy(np.array(img).astype("float32") / 255.0))
+
+        batch = torch.stack(tensors, dim=0)  # [B, H, W, C]
+        print(f"[ZImageI2LV2] Loaded {len(files)} image(s) from {path} -> batch {tuple(batch.shape)}")
+        return (batch, len(files))
+
+
 NODE_CLASS_MAPPINGS = {
     "ZImageI2LV2Loader": ZImageI2LV2Loader,
+    "ZImageI2LV2LoadImagesFromFolder": ZImageI2LV2LoadImagesFromFolder,
     "ZImageI2LV2ExtractLoRA": ZImageI2LV2ExtractLoRA,
     "ZImageI2LV2SaveLoRA": ZImageI2LV2SaveLoRA,
     "ZImageI2LV2Generate": ZImageI2LV2Generate,
@@ -287,6 +355,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "ZImageI2LV2Loader": "Z-Image i2L v2 — Loader",
+    "ZImageI2LV2LoadImagesFromFolder": "Z-Image i2L v2 — Load Images From Folder",
     "ZImageI2LV2ExtractLoRA": "Z-Image i2L v2 — Extract LoRA",
     "ZImageI2LV2SaveLoRA": "Z-Image i2L v2 — Save LoRA",
     "ZImageI2LV2Generate": "Z-Image i2L v2 — Generate",
