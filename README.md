@@ -23,10 +23,12 @@ Two usage patterns:
 - **Loader → Extract → Save** — get a reusable LoRA file.
 - **Loader → Generate** — best-quality styled image in one shot (keeps asymmetric CFG).
 
-## Requirements / setup (on the CUDA box, e.g. RunPod RTX 5090)
+## Requirements / setup (on the CUDA box, e.g. RunPod RTX 4090)
 
-The 5090 is Blackwell (sm_120) and needs a recent PyTorch (cu128+). Most current ComfyUI
-pod images already ship one; verify with the env check below.
+A 4090 (Ada, sm_89, 24 GB) works with mainstream stable PyTorch (cu121/cu124) — any current
+ComfyUI pod image already ships a compatible build. 24 GB is the known-good baseline; if you
+hit OOM, enable CPU offload. (On newer Blackwell cards like the 5090, you'd instead need a
+cu128+ PyTorch build.) Verify your setup with the env check below.
 
 ```bash
 # 1. Install DiffSynth-Studio from git (NOT PyPI — v2 needs diffsynth.diffusion.template)
