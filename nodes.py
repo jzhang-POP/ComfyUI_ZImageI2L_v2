@@ -46,40 +46,46 @@ def _resolve_dtype(name):
 
 
 def _comfy_pbar_cmd():
-    """A tqdm-shaped callable that drives ComfyUI's per-node progress bar.
+    """A tqdm-shaped callable that shows progress in BOTH places.
 
-    DiffSynth's sampling loop does `for ... in enumerate(progress_bar_cmd(timesteps))`, and by
-    default `progress_bar_cmd=tqdm`, which only prints to the server console. We pass this
-    instead so each step ticks `comfy.utils.ProgressBar`, filling the green bar on the node.
-    Falls back to tqdm if comfy.utils isn't importable (e.g. outside a running ComfyUI).
+    DiffSynth's sampling loop does `for ... in enumerate(progress_bar_cmd(timesteps))`, default
+    `progress_bar_cmd=tqdm`. We return a wrapper that, per step, (1) advances the real tqdm
+    console bar AND (2) ticks `comfy.utils.ProgressBar` so the green bar fills on the node.
+    Driving both means progress is visible even if one channel (e.g. the node UI) doesn't render.
     """
     try:
         import comfy.utils
+        _ProgressBar = comfy.utils.ProgressBar
     except Exception:
-        from tqdm import tqdm
-        return tqdm
+        _ProgressBar = None
+    from tqdm import tqdm as _tqdm
 
     class _Bar:
         def __init__(self, iterable=None, total=None, *args, **kwargs):
-            self.iterable = iterable
             if total is None and hasattr(iterable, "__len__"):
                 total = len(iterable)
-            self.pbar = comfy.utils.ProgressBar(total) if total else None
+            self.iterable = iterable
+            self._tqdm = _tqdm(total=total)  # console bar (what you saw before)
+            self.pbar = _ProgressBar(total) if (_ProgressBar is not None and total) else None
+
+        def _tick(self, n=1):
+            self._tqdm.update(n)
+            if self.pbar is not None:
+                self.pbar.update(n)
 
         def __iter__(self):
             if self.iterable is None:
                 return
             for x in self.iterable:
                 yield x
-                if self.pbar is not None:
-                    self.pbar.update(1)
+                self._tick(1)
+            self._tqdm.close()
 
         def update(self, n=1):
-            if self.pbar is not None:
-                self.pbar.update(n)
+            self._tick(n)
 
         def close(self):
-            pass
+            self._tqdm.close()
 
     return _Bar
 
