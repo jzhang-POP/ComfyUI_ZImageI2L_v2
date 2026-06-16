@@ -165,6 +165,15 @@ class ZImageI2LV2Loader:
             vram_config = {}
             vram_limit = None
 
+        # Coarse milestone progress: from_pretrained exposes no per-file hook, so we can only
+        # tick after each major stage. Watch the console for actual download/load bytes.
+        try:
+            import comfy.utils
+            pbar = comfy.utils.ProgressBar(2)
+        except Exception:
+            pbar = None
+
+        print("[ZImageI2LV2] Loading base Z-Image pipeline (first run downloads models)...")
         pipe = ZImagePipeline.from_pretrained(
             torch_dtype=torch_dtype,
             device=device,
@@ -178,13 +187,18 @@ class ZImageI2LV2Loader:
         )
         # Required so predicted LoRAs can be hot-loaded onto the DiT at generation time.
         pipe.enable_lora_hot_loading(pipe.dit)
+        if pbar is not None:
+            pbar.update(1)
 
+        print("[ZImageI2LV2] Loading i2L v2 template (DiffSynth-Studio/ZImage-i2L-v2)...")
         template = TemplatePipeline.from_pretrained(
             torch_dtype=torch_dtype,
             device=device,
             model_configs=[ModelConfig(model_id="DiffSynth-Studio/ZImage-i2L-v2")],
             lazy_loading=low_vram,
         )
+        if pbar is not None:
+            pbar.update(1)
         return (pipe, template)
 
 
