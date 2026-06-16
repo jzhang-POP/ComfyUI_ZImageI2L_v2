@@ -45,6 +45,45 @@ def _resolve_dtype(name):
     return {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}[name]
 
 
+def _comfy_pbar_cmd():
+    """A tqdm-shaped callable that drives ComfyUI's per-node progress bar.
+
+    DiffSynth's sampling loop does `for ... in enumerate(progress_bar_cmd(timesteps))`, and by
+    default `progress_bar_cmd=tqdm`, which only prints to the server console. We pass this
+    instead so each step ticks `comfy.utils.ProgressBar`, filling the green bar on the node.
+    Falls back to tqdm if comfy.utils isn't importable (e.g. outside a running ComfyUI).
+    """
+    try:
+        import comfy.utils
+    except Exception:
+        from tqdm import tqdm
+        return tqdm
+
+    class _Bar:
+        def __init__(self, iterable=None, total=None, *args, **kwargs):
+            self.iterable = iterable
+            if total is None and hasattr(iterable, "__len__"):
+                total = len(iterable)
+            self.pbar = comfy.utils.ProgressBar(total) if total else None
+
+        def __iter__(self):
+            if self.iterable is None:
+                return
+            for x in self.iterable:
+                yield x
+                if self.pbar is not None:
+                    self.pbar.update(1)
+
+        def update(self, n=1):
+            if self.pbar is not None:
+                self.pbar.update(n)
+
+        def close(self):
+            pass
+
+    return _Bar
+
+
 def _check_v2_available():
     """Raise a clear, actionable error if the v2 template API isn't importable."""
     try:
@@ -266,6 +305,7 @@ class ZImageI2LV2Generate:
             num_inference_steps=int(num_inference_steps),
             template_inputs=[{"image": pils}],
             negative_template_inputs=[{"image": _gray_negatives(pils)}],
+            progress_bar_cmd=_comfy_pbar_cmd(),  # show progress on the node, not just console
         )
         # sigma_shift is a Z-Image pipeline knob (v1 i2L example used 8). Omit if zeroed
         # so we don't pass an unexpected kwarg when the user disables it.
@@ -482,6 +522,7 @@ class ZImageI2LV2Sample:
             negative_prompt=negative_prompt or "",
             lora=pipe_lora.get("lora"),
             negative_lora=pipe_lora.get("negative_lora"),
+            progress_bar_cmd=_comfy_pbar_cmd(),  # show progress on the node, not just console
             **cfg,  # seed, cfg_scale, num_inference_steps, width, height
         )
         if sigma_shift and sigma_shift > 0:
