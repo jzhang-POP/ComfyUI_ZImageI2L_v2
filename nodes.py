@@ -77,6 +77,9 @@ class ZImageI2LV2Loader:
             "required": {
                 "device": (["cuda", "mps", "cpu"], {"default": "cuda"}),
                 "dtype": (["bfloat16", "float16", "float32"], {"default": "bfloat16"}),
+                # On by default: 24 GB cards OOM during DiT sampling with everything
+                # resident. Streams weights CPU<->GPU. Turn off on >=32 GB for speed.
+                "low_vram": ("BOOLEAN", {"default": True}),
             },
             "optional": {
                 # Blank = use the MODELSCOPE_CACHE env var / default cache location.
@@ -89,7 +92,7 @@ class ZImageI2LV2Loader:
     FUNCTION = "load"
     CATEGORY = "ZImage-i2L"
 
-    def load(self, device, dtype, modelscope_cache=""):
+    def load(self, device, dtype, low_vram=True, modelscope_cache=""):
         _check_v2_available()
         import torch
         from diffsynth.pipelines.z_image import ZImagePipeline, ModelConfig
@@ -106,15 +109,33 @@ class ZImageI2LV2Loader:
 
         torch_dtype = _resolve_dtype(dtype)
 
+        # Low-VRAM: keep base-pipeline weights on CPU and stream them to the GPU only for
+        # computation (vram_limit=0). This frees the text encoder (~8 GB) etc. during DiT
+        # sampling so the stack fits in 24 GB. TemplatePipeline has no vram_limit, so we use
+        # its lazy_loading instead. Disable on >=32 GB GPUs for speed.
+        offload = low_vram and device == "cuda"
+        if offload:
+            vram_config = dict(
+                offload_dtype=torch_dtype, offload_device="cpu",
+                onload_dtype=torch_dtype, onload_device="cpu",
+                preparing_dtype=torch_dtype, preparing_device="cuda",
+                computation_dtype=torch_dtype, computation_device="cuda",
+            )
+            vram_limit = 0
+        else:
+            vram_config = {}
+            vram_limit = None
+
         pipe = ZImagePipeline.from_pretrained(
             torch_dtype=torch_dtype,
             device=device,
             model_configs=[
-                ModelConfig(model_id="Tongyi-MAI/Z-Image", origin_file_pattern="transformer/*.safetensors"),
-                ModelConfig(model_id="Tongyi-MAI/Z-Image-Turbo", origin_file_pattern="text_encoder/*.safetensors"),
-                ModelConfig(model_id="Tongyi-MAI/Z-Image-Turbo", origin_file_pattern="vae/diffusion_pytorch_model.safetensors"),
+                ModelConfig(model_id="Tongyi-MAI/Z-Image", origin_file_pattern="transformer/*.safetensors", **vram_config),
+                ModelConfig(model_id="Tongyi-MAI/Z-Image-Turbo", origin_file_pattern="text_encoder/*.safetensors", **vram_config),
+                ModelConfig(model_id="Tongyi-MAI/Z-Image-Turbo", origin_file_pattern="vae/diffusion_pytorch_model.safetensors", **vram_config),
             ],
             tokenizer_config=ModelConfig(model_id="Tongyi-MAI/Z-Image-Turbo", origin_file_pattern="tokenizer/"),
+            vram_limit=vram_limit,
         )
         # Required so predicted LoRAs can be hot-loaded onto the DiT at generation time.
         pipe.enable_lora_hot_loading(pipe.dit)
@@ -123,6 +144,7 @@ class ZImageI2LV2Loader:
             torch_dtype=torch_dtype,
             device=device,
             model_configs=[ModelConfig(model_id="DiffSynth-Studio/ZImage-i2L-v2")],
+            lazy_loading=low_vram,
         )
         return (pipe, template)
 
