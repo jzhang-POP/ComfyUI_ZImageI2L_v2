@@ -129,6 +129,8 @@ class ZImageI2LV2Loader:
             "optional": {
                 # Blank = use the MODELSCOPE_CACHE env var / default cache location.
                 "modelscope_cache": ("STRING", {"default": ""}),
+                # Also load the Z-Image ControlNet Union (needed by the ControlNet Sample node).
+                "load_controlnet": ("BOOLEAN", {"default": False}),
             },
         }
 
@@ -137,7 +139,7 @@ class ZImageI2LV2Loader:
     FUNCTION = "load"
     CATEGORY = "ZImage-i2L"
 
-    def load(self, device, dtype, low_vram=True, modelscope_cache=""):
+    def load(self, device, dtype, low_vram=True, modelscope_cache="", load_controlnet=False):
         _check_v2_available()
         import torch
         from diffsynth.pipelines.z_image import ZImagePipeline, ModelConfig
@@ -180,14 +182,22 @@ class ZImageI2LV2Loader:
             pbar = None
 
         print("[ZImageI2LV2] Loading base Z-Image pipeline (first run downloads models)...")
+        model_configs = [
+            ModelConfig(model_id="Tongyi-MAI/Z-Image", origin_file_pattern="transformer/*.safetensors", **vram_config),
+            ModelConfig(model_id="Tongyi-MAI/Z-Image-Turbo", origin_file_pattern="text_encoder/*.safetensors", **vram_config),
+            ModelConfig(model_id="Tongyi-MAI/Z-Image-Turbo", origin_file_pattern="vae/diffusion_pytorch_model.safetensors", **vram_config),
+        ]
+        if load_controlnet:
+            print("[ZImageI2LV2] Also loading Z-Image ControlNet Union (PAI/Z-Image-Turbo-Fun-Controlnet-Union-2.1)...")
+            model_configs.append(ModelConfig(
+                model_id="PAI/Z-Image-Turbo-Fun-Controlnet-Union-2.1",
+                origin_file_pattern="Z-Image-Turbo-Fun-Controlnet-Union-2.1.safetensors",
+                **vram_config,
+            ))
         pipe = ZImagePipeline.from_pretrained(
             torch_dtype=torch_dtype,
             device=device,
-            model_configs=[
-                ModelConfig(model_id="Tongyi-MAI/Z-Image", origin_file_pattern="transformer/*.safetensors", **vram_config),
-                ModelConfig(model_id="Tongyi-MAI/Z-Image-Turbo", origin_file_pattern="text_encoder/*.safetensors", **vram_config),
-                ModelConfig(model_id="Tongyi-MAI/Z-Image-Turbo", origin_file_pattern="vae/diffusion_pytorch_model.safetensors", **vram_config),
-            ],
+            model_configs=model_configs,
             tokenizer_config=ModelConfig(model_id="Tongyi-MAI/Z-Image-Turbo", origin_file_pattern="tokenizer/"),
             vram_limit=vram_limit,
         )
@@ -503,6 +513,142 @@ class ZImageI2LV2Sample:
         return (_pil_to_image_tensor(image),)
 
 
+class ZImageI2LV2SampleImg2Img:
+    """Img2img: restyle ("toonify") an existing image with the i2L style LoRA.
+
+    Like Sample, but takes an `input_image` and a `denoising_strength`:
+      - low strength (~0.3) stays close to the source photo,
+      - high strength (~0.8) leans hard into the LoRA's style.
+    width/height = 0 means "match the input image" (rounded to multiples of 16).
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "pipe": ("ZIMAGE_PIPE",),
+                "lora": ("ZIMAGE_LORA",),
+                "input_image": ("IMAGE", {"tooltip": "Source image to restyle."}),
+                "prompt": ("STRING", {"default": "", "multiline": True}),
+                "denoising_strength": ("FLOAT", {"default": 0.6, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF, "control_after_generate": True}),
+                "cfg_scale": ("FLOAT", {"default": 4.0, "min": 0.0, "max": 30.0, "step": 0.1}),
+                "num_inference_steps": ("INT", {"default": 50, "min": 1, "max": 200}),
+                "sigma_shift": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 20.0, "step": 0.1}),
+                "width": ("INT", {"default": 0, "min": 0, "max": 4096, "step": 16}),
+                "height": ("INT", {"default": 0, "min": 0, "max": 4096, "step": 16}),
+            },
+            "optional": {
+                "negative_lora": ("ZIMAGE_LORA",),
+                "negative_prompt": ("STRING", {"default": "", "multiline": True}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "sample"
+    CATEGORY = "ZImage-i2L/atomic"
+
+    def sample(self, pipe, lora, input_image, prompt, denoising_strength, seed, cfg_scale,
+               num_inference_steps, sigma_shift, width, height, negative_lora=None, negative_prompt=""):
+        import torch
+        pil = _images_to_pils(input_image)[0]
+        if width and height and width > 0 and height > 0:
+            w, h = int(width), int(height)
+        else:
+            w, h = pil.size
+            w, h = max(16, (w // 16) * 16), max(16, (h // 16) * 16)
+
+        kwargs = dict(
+            prompt=prompt,
+            negative_prompt=negative_prompt or "",
+            lora=lora,
+            negative_lora=negative_lora,
+            input_image=pil,
+            denoising_strength=float(denoising_strength),
+            seed=int(seed),
+            cfg_scale=float(cfg_scale),
+            num_inference_steps=int(num_inference_steps),
+            width=w,
+            height=h,
+            progress_bar_cmd=_comfy_pbar_cmd(),
+        )
+        if sigma_shift and sigma_shift > 0:
+            kwargs["sigma_shift"] = float(sigma_shift)
+
+        with torch.no_grad():
+            image = pipe(**kwargs)
+        return (_pil_to_image_tensor(image),)
+
+
+class ZImageI2LV2SampleControlNet:
+    """ControlNet generation: a control image sets structure, the i2L LoRA sets style.
+
+    Requires the Loader's `load_controlnet` enabled (downloads
+    PAI/Z-Image-Turbo-Fun-Controlnet-Union-2.1). The Union ControlNet accepts a control map
+    (depth / canny / pose / tile, etc.) as `control_image`; `control_scale` sets its strength.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "pipe": ("ZIMAGE_PIPE",),
+                "lora": ("ZIMAGE_LORA",),
+                "control_image": ("IMAGE", {"tooltip": "Control map (depth/canny/pose/tile...) matching the Union ControlNet."}),
+                "prompt": ("STRING", {"default": "a cat is sitting on a stone", "multiline": True}),
+                "control_scale": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 2.0, "step": 0.05}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF, "control_after_generate": True}),
+                "cfg_scale": ("FLOAT", {"default": 4.0, "min": 0.0, "max": 30.0, "step": 0.1}),
+                "num_inference_steps": ("INT", {"default": 50, "min": 1, "max": 200}),
+                "sigma_shift": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 20.0, "step": 0.1}),
+                "width": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 16}),
+                "height": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 16}),
+            },
+            "optional": {
+                "negative_lora": ("ZIMAGE_LORA",),
+                "negative_prompt": ("STRING", {"default": "", "multiline": True}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "sample"
+    CATEGORY = "ZImage-i2L/atomic"
+
+    def sample(self, pipe, lora, control_image, prompt, control_scale, seed, cfg_scale,
+               num_inference_steps, sigma_shift, width, height, negative_lora=None, negative_prompt=""):
+        import torch
+        from diffsynth.utils.controlnet import ControlNetInput
+
+        if getattr(pipe, "controlnet", None) is None:
+            raise RuntimeError(
+                "No ControlNet is loaded on the pipeline. Enable 'load_controlnet' on the Loader "
+                "node (it downloads PAI/Z-Image-Turbo-Fun-Controlnet-Union-2.1) and re-run."
+            )
+
+        ctrl = _images_to_pils(control_image)[0]
+        kwargs = dict(
+            prompt=prompt,
+            negative_prompt=negative_prompt or "",
+            lora=lora,
+            negative_lora=negative_lora,
+            controlnet_inputs=[ControlNetInput(image=ctrl, scale=float(control_scale))],
+            seed=int(seed),
+            cfg_scale=float(cfg_scale),
+            num_inference_steps=int(num_inference_steps),
+            width=int(width),
+            height=int(height),
+            progress_bar_cmd=_comfy_pbar_cmd(),
+        )
+        if sigma_shift and sigma_shift > 0:
+            kwargs["sigma_shift"] = float(sigma_shift)
+
+        with torch.no_grad():
+            image = pipe(**kwargs)
+        return (_pil_to_image_tensor(image),)
+
+
 NODE_CLASS_MAPPINGS = {
     "ZImageI2LV2Loader": ZImageI2LV2Loader,
     "ZImageI2LV2LoadImagesFromFolder": ZImageI2LV2LoadImagesFromFolder,
@@ -512,6 +658,8 @@ NODE_CLASS_MAPPINGS = {
     # atomic building blocks
     "ZImageI2LV2GrayImages": ZImageI2LV2GrayImages,
     "ZImageI2LV2Sample": ZImageI2LV2Sample,
+    "ZImageI2LV2SampleImg2Img": ZImageI2LV2SampleImg2Img,
+    "ZImageI2LV2SampleControlNet": ZImageI2LV2SampleControlNet,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -522,4 +670,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ZImageI2LV2Generate": "Z-Image i2L v2 — Generate",
     "ZImageI2LV2GrayImages": "Z-Image i2L v2 — Make Gray Images",
     "ZImageI2LV2Sample": "Z-Image i2L v2 — Sample",
+    "ZImageI2LV2SampleImg2Img": "Z-Image i2L v2 — Sample (Img2Img)",
+    "ZImageI2LV2SampleControlNet": "Z-Image i2L v2 — Sample (ControlNet)",
 }

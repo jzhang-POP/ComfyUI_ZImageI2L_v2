@@ -1,0 +1,161 @@
+{
+  "last_node_id": 8,
+  "last_link_id": 10,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "ZImageI2LV2LoadImagesFromFolder",
+      "pos": [20, 60],
+      "size": [360, 90],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "images", "type": "IMAGE", "links": [1, 2], "slot_index": 0},
+        {"name": "count", "type": "INT", "links": null, "slot_index": 1}
+      ],
+      "properties": {"Node name for S&R": "ZImageI2LV2LoadImagesFromFolder"},
+      "widgets_values": ["/workspace/styles/toon", 0]
+    },
+    {
+      "id": 2,
+      "type": "ZImageI2LV2GrayImages",
+      "pos": [420, 60],
+      "size": [220, 60],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {"name": "images", "type": "IMAGE", "link": 2}
+      ],
+      "outputs": [
+        {"name": "gray_images", "type": "IMAGE", "links": [3], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "ZImageI2LV2GrayImages"},
+      "widgets_values": []
+    },
+    {
+      "id": 3,
+      "type": "ZImageI2LV2Loader",
+      "pos": [20, 200],
+      "size": [330, 150],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "pipe", "type": "ZIMAGE_PIPE", "links": [6], "slot_index": 0},
+        {"name": "template", "type": "ZIMAGE_I2L_TEMPLATE", "links": [4, 5], "slot_index": 1}
+      ],
+      "properties": {"Node name for S&R": "ZImageI2LV2Loader"},
+      "widgets_values": ["cuda", "bfloat16", true, "", false]
+    },
+    {
+      "id": 4,
+      "type": "ZImageI2LV2ExtractLoRA",
+      "pos": [440, 180],
+      "size": [260, 80],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {"name": "template", "type": "ZIMAGE_I2L_TEMPLATE", "link": 4},
+        {"name": "images", "type": "IMAGE", "link": 1}
+      ],
+      "outputs": [
+        {"name": "lora", "type": "ZIMAGE_LORA", "links": [7], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "ZImageI2LV2ExtractLoRA"},
+      "widgets_values": []
+    },
+    {
+      "id": 5,
+      "type": "ZImageI2LV2ExtractLoRA",
+      "pos": [440, 300],
+      "size": [260, 80],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {"name": "template", "type": "ZIMAGE_I2L_TEMPLATE", "link": 5},
+        {"name": "images", "type": "IMAGE", "link": 3}
+      ],
+      "outputs": [
+        {"name": "lora", "type": "ZIMAGE_LORA", "links": [8], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "ZImageI2LV2ExtractLoRA"},
+      "widgets_values": []
+    },
+    {
+      "id": 6,
+      "type": "LoadImage",
+      "pos": [440, 420],
+      "size": [300, 314],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [9], "slot_index": 0},
+        {"name": "MASK", "type": "MASK", "links": null, "slot_index": 1}
+      ],
+      "properties": {"Node name for S&R": "LoadImage"},
+      "widgets_values": ["photo_to_toonify.jpg", "image"]
+    },
+    {
+      "id": 7,
+      "type": "ZImageI2LV2SampleImg2Img",
+      "pos": [780, 160],
+      "size": [380, 360],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {"name": "pipe", "type": "ZIMAGE_PIPE", "link": 6},
+        {"name": "lora", "type": "ZIMAGE_LORA", "link": 7},
+        {"name": "input_image", "type": "IMAGE", "link": 9},
+        {"name": "negative_lora", "type": "ZIMAGE_LORA", "link": 8}
+      ],
+      "outputs": [
+        {"name": "image", "type": "IMAGE", "links": [10], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "ZImageI2LV2SampleImg2Img"},
+      "widgets_values": ["", 0.6, 0, "fixed", 4.0, 50, 8.0, 0, 0, ""]
+    },
+    {
+      "id": 8,
+      "type": "PreviewImage",
+      "pos": [1200, 160],
+      "size": [380, 380],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {"name": "images", "type": "IMAGE", "link": 10}
+      ],
+      "outputs": [],
+      "properties": {"Node name for S&R": "PreviewImage"},
+      "widgets_values": []
+    }
+  ],
+  "links": [
+    [1, 1, 0, 4, 1, "IMAGE"],
+    [2, 1, 0, 2, 0, "IMAGE"],
+    [3, 2, 0, 5, 1, "IMAGE"],
+    [4, 3, 1, 4, 0, "ZIMAGE_I2L_TEMPLATE"],
+    [5, 3, 1, 5, 0, "ZIMAGE_I2L_TEMPLATE"],
+    [6, 3, 0, 7, 0, "ZIMAGE_PIPE"],
+    [7, 4, 0, 7, 1, "ZIMAGE_LORA"],
+    [8, 5, 0, 7, 3, "ZIMAGE_LORA"],
+    [9, 6, 0, 7, 2, "IMAGE"],
+    [10, 7, 0, 8, 0, "IMAGE"]
+  ],
+  "groups": [
+    {"title": "Style refs -> LoRA (+ gray negative)", "bounding": [410, 110, 300, 280], "color": "#3f789e", "font_size": 18, "flags": {}},
+    {"title": "Photo to toonify", "bounding": [430, 390, 320, 360], "color": "#8A8", "font_size": 18, "flags": {}}
+  ],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}
