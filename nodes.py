@@ -131,6 +131,10 @@ class ZImageI2LV2Loader:
                 "modelscope_cache": ("STRING", {"default": ""}),
                 # Also load the Z-Image ControlNet Union (needed by the ControlNet Sample node).
                 "load_controlnet": ("BOOLEAN", {"default": False}),
+                # Which transformer to load. i2L generation uses the base "z-image" (cfg ~4).
+                # The Z-Image ControlNet Union is trained for "z-image-turbo" (cfg ~1), so the
+                # ControlNet workflows must use turbo or you get noise.
+                "base_model": (["z-image", "z-image-turbo"], {"default": "z-image"}),
             },
         }
 
@@ -139,7 +143,7 @@ class ZImageI2LV2Loader:
     FUNCTION = "load"
     CATEGORY = "ZImage-i2L"
 
-    def load(self, device, dtype, low_vram=True, modelscope_cache="", load_controlnet=False):
+    def load(self, device, dtype, low_vram=True, modelscope_cache="", load_controlnet=False, base_model="z-image"):
         _check_v2_available()
         import torch
         from diffsynth.pipelines.z_image import ZImagePipeline, ModelConfig
@@ -181,9 +185,12 @@ class ZImageI2LV2Loader:
         except Exception:
             pbar = None
 
-        print("[ZImageI2LV2] Loading base Z-Image pipeline (first run downloads models)...")
+        # The base "z-image" transformer is what i2L generation expects (cfg ~4). The Z-Image
+        # ControlNet Union is trained for "z-image-turbo" (cfg ~1) — use turbo for ControlNet.
+        transformer_repo = "Tongyi-MAI/Z-Image-Turbo" if base_model == "z-image-turbo" else "Tongyi-MAI/Z-Image"
+        print(f"[ZImageI2LV2] Loading {transformer_repo} pipeline (first run downloads models)...")
         model_configs = [
-            ModelConfig(model_id="Tongyi-MAI/Z-Image", origin_file_pattern="transformer/*.safetensors", **vram_config),
+            ModelConfig(model_id=transformer_repo, origin_file_pattern="transformer/*.safetensors", **vram_config),
             ModelConfig(model_id="Tongyi-MAI/Z-Image-Turbo", origin_file_pattern="text_encoder/*.safetensors", **vram_config),
             ModelConfig(model_id="Tongyi-MAI/Z-Image-Turbo", origin_file_pattern="vae/diffusion_pytorch_model.safetensors", **vram_config),
         ]
@@ -599,9 +606,11 @@ class ZImageI2LV2SampleControlNet:
                 "prompt": ("STRING", {"default": "a cat is sitting on a stone", "multiline": True}),
                 "control_scale": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 2.0, "step": 0.05}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF, "control_after_generate": True}),
-                "cfg_scale": ("FLOAT", {"default": 4.0, "min": 0.0, "max": 30.0, "step": 0.1}),
-                "num_inference_steps": ("INT", {"default": 50, "min": 1, "max": 200}),
-                "sigma_shift": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 20.0, "step": 0.1}),
+                # Turbo-tuned defaults: the ControlNet Union expects z-image-turbo (cfg ~1,
+                # ~30 steps, no sigma_shift). At cfg 1 the negative_lora branch is inactive.
+                "cfg_scale": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 30.0, "step": 0.1}),
+                "num_inference_steps": ("INT", {"default": 30, "min": 1, "max": 200}),
+                "sigma_shift": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 20.0, "step": 0.1}),
                 "width": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 16}),
                 "height": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 16}),
             },
